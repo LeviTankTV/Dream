@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topi </title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="loadingOverlay" class="loading-overlay">
+    Loading...
+    </div>
+    <!-- Добавьте этот overlay для аутентификации -->
+    <div id="authOverlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; display: none; justify-content: center; align-items: center;">
+        <div style="background: white; padding: 20px; border-radius: 10px; text-align: center;">
+            <h2>Вход в игру</h2>
+            <div style="margin: 10px 0;">
+                <input type="text" id="usernameInput" placeholder="Логин" style="padding: 8px; margin: 5px; width: 200px;">
+            </div>
+            <div style="margin: 10px 0;">
+                <input type="password" id="passwordInput" placeholder="Пароль" style="padding: 8px; margin: 5px; width: 200px;">
+            </div>
+            <div style="margin: 10px 0;">
+                <button id="loginBtn" style="padding: 8px 15px; margin: 5px;">Войти</button>
+                <button id="registerBtn" style="padding: 8px 15px; margin: 5px;">Регистрация</button>
+            </div>
+            <div id="authMessage" style="color: red; margin-top: 10px;"></div>
+        </div>
+    </div>
+
+    <div id="game-container">
+    <!-- Только кнопка входа в игру -->
+    <div id="ui">
+        <button id="enterGame">Enter Game</button>
+    </div>
+
+    <!-- Debug-панель в левом нижнем углу (изначально скрыта) -->
+    <div id="debug-info">
+        <div class="info-item">Your ID: <span id="playerId">-</span></div>
+        <div class="info-item" id="coordinates">Coordinates: 0, 0</div>
+        <div class="info-item">Players: <span id="playerCount">0</span></div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+    <script src="index.js"></script>
+</body>
+</html>
