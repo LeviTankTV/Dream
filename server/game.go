@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"math/rand"
-	"net/http"
 	"sync"
 	"time"
 
@@ -191,48 +190,4 @@ func (g *Game) GetPlayersCount() int {
 	g.playersMu.RLock()
 	defer g.playersMu.RUnlock()
 	return len(g.players)
-}
-
-// В handleWebSocket изменим вызов AddPlayer:
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println("WebSocket upgrade error:", err)
-		return
-	}
-	defer ws.Close()
-
-	// Создаем нового игрока, передавая соединение
-	player := game.AddPlayer(ws)
-	defer game.RemovePlayer(player.ID)
-
-	// Отправляем начальное состояние
-	initialState := game.GetGameState(player.ID)
-	if err := ws.WriteJSON(initialState); err != nil {
-		fmt.Println("Error sending initial state:", err)
-		return
-	}
-
-	// Обрабатываем сообщения от клиента
-	for {
-		var msg GameMessage
-		if err := ws.ReadJSON(&msg); err != nil {
-			fmt.Printf("Player %s disconnected: %v\n", player.ID, err)
-			break
-		}
-
-		switch msg.Type {
-		case "move":
-			if moveData, ok := msg.Data.(map[string]interface{}); ok {
-				dx, _ := moveData["dx"].(float64)
-				dy, _ := moveData["dy"].(float64)
-
-				game.MovePlayer(player.ID, dx, dy)
-				// Теперь состояние рассылается автоматически через synchronizeGameState
-			}
-		case "ping":
-			// Ответ на пинг-сообщение
-			ws.WriteJSON(GameMessage{Type: "pong"})
-		}
-	}
 }

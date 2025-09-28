@@ -4,7 +4,7 @@ class GameClient {
         this.gameState = {
             players: {},
             myId: null,
-            worldSize: 1000
+            worldSize: 2000
         };
         this.canvas = null;
         this.ctx = null;
@@ -13,7 +13,7 @@ class GameClient {
         this.camera = { x: 0, y: 0 };
         this.gameLoopInterval = null;
         this.lastUpdateTime = 0;
-        this.fps = 60; // Желаемый FPS
+        this.fps = 60;
         this.frameTime = 1000 / this.fps;
         
         this.init();
@@ -29,25 +29,21 @@ class GameClient {
         
         document.getElementById('enterGame').addEventListener('click', () => this.enterGame());
         
-        // Запускаем игровой цикл на setInterval вместо requestAnimationFrame
         this.startGameLoop();
         
         console.log('Game client initialized');
     }
 
     startGameLoop() {
-        // Останавливаем предыдущий цикл, если был
         this.stopGameLoop();
         
-        // Запускаем новый цикл
         this.gameLoopInterval = setInterval(() => {
             this.gameLoop();
         }, this.frameTime);
         
-        // Также запускаем цикл движения с более высокой частотой для плавности
         this.movementInterval = setInterval(() => {
             this.handleMovement();
-        }, 1000/120); // 120 FPS для обработки ввода
+        }, 1000/120);
     }
 
     stopGameLoop() {
@@ -68,8 +64,7 @@ class GameClient {
 
     setupControls() {
         document.addEventListener('keydown', (e) => {
-            // Предотвращаем стандартное поведение браузера для игровых клавиш
-            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'w', 'a', 's', 'd'].includes(e.key)) {
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'w', 'a', 's', 'd', "ц", 'ф', "ы", "в"].includes(e.key)) {
                 e.preventDefault();
             }
             this.keys[e.key.toLowerCase()] = true;
@@ -79,7 +74,6 @@ class GameClient {
             this.keys[e.key.toLowerCase()] = false;
         });
 
-        // Обработчик потери фокуса - сбрасываем состояние клавиш
         window.addEventListener('blur', () => {
             this.keys = {};
         });
@@ -96,12 +90,16 @@ class GameClient {
         this.ws.onopen = () => {
             console.log('Connected to game server');
             this.showGameUI();
-            // Игровой цикл уже запущен в init()
         };
         
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                if (data.type === "error") {
+                    alert("Connection rejected: " + data.message);
+                    this.ws.close();
+                    return;
+                }
                 this.handleGameMessage(data);
             } catch (error) {
                 console.error('Error parsing game message:', error);
@@ -117,7 +115,6 @@ class GameClient {
             console.error('WebSocket error:', error);
         };
 
-        // Пинг-понг для поддержания соединения
         this.keepAliveInterval = setInterval(() => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({ type: 'ping' }));
@@ -134,7 +131,6 @@ class GameClient {
                 this.updateUI();
                 break;
             case 'pong':
-                // Обработка пинг-понга для поддержания соединения
                 break;
         }
     }
@@ -148,7 +144,6 @@ class GameClient {
         document.getElementById('playerInfo').style.display = 'none';
         document.getElementById('enterGame').style.display = 'block';
         
-        // Очищаем интервал пинг-понга при отключении
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval);
         }
@@ -170,14 +165,13 @@ class GameClient {
         let dx = 0, dy = 0;
         const speed = 5;
         
-        if (this.keys['arrowup'] || this.keys['w']) dy = -speed;
-        if (this.keys['arrowdown'] || this.keys['s']) dy = speed;
-        if (this.keys['arrowleft'] || this.keys['a']) dx = -speed;
-        if (this.keys['arrowright'] || this.keys['d']) dx = speed;
+        if (this.keys['arrowup'] || this.keys['w'] || this.keys['ц']) dy = -speed;
+        if (this.keys['arrowdown'] || this.keys['s'] || this.keys['ы']) dy = speed;
+        if (this.keys['arrowleft'] || this.keys['a'] || this.keys['ф']) dx = -speed;
+        if (this.keys['arrowright'] || this.keys['d'] || this.keys['в']) dx = speed;
         
-        // Диагональное движение - нормализуем скорость
         if (dx !== 0 && dy !== 0) {
-            dx *= 0.707; // 1/√2
+            dx *= 0.707;
             dy *= 0.707;
         }
         
@@ -192,18 +186,16 @@ class GameClient {
     gameLoop() {
         const currentTime = Date.now();
         
-        // Ограничиваем FPS для производительности
         if (currentTime - this.lastUpdateTime < this.frameTime) {
             return;
         }
         
         this.lastUpdateTime = currentTime;
         
-        // Очищаем canvas
-        this.ctx.fillStyle = '#162447';
+        // Clear canvas with WHITE background (as requested)
+        this.ctx.fillStyle = '#ffffff';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         
-        // Рисуем игровой мир
         this.drawWorld();
     }
 
@@ -211,39 +203,68 @@ class GameClient {
         const myPlayer = this.gameState.players[this.gameState.myId];
         if (!myPlayer) return;
         
-        // Центрируем камеру на своем игроке
-        this.camera.x = this.canvas.width / 2 - myPlayer.x;
-        this.camera.y = this.canvas.height / 2 - myPlayer.y;
+        // Center camera on player
+        this.camera.x = -myPlayer.x + this.canvas.width / 2;
+        this.camera.y = -myPlayer.y + this.canvas.height / 2;
         
-        // Рисуем сетку мира
+        // Draw the world square with black borders
+        this.drawWorldSquare();
+        
+        // Draw grid
         this.drawWorldGrid();
         
-        // Рисуем всех игроков
+        // Draw players
         this.drawPlayers();
+    }
+
+    drawWorldSquare() {
+        // Draw the main world square (1000x1000) filled with white and black borders
+        this.ctx.fillStyle = '#ffffff'; // White fill
+        this.ctx.fillRect(
+            this.camera.x, 
+            this.camera.y, 
+            this.gameState.worldSize, 
+            this.gameState.worldSize
+        );
         
-        // Рисуем границы мира
-        this.drawWorldBounds();
+        // Draw black border around the world
+        this.ctx.strokeStyle = '#000000'; // Black border
+        this.ctx.lineWidth = 4;
+        this.ctx.strokeRect(
+            this.camera.x, 
+            this.camera.y, 
+            this.gameState.worldSize, 
+            this.gameState.worldSize
+        );
     }
 
     drawWorldGrid() {
-        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)'; // Light gray grid on white background
         this.ctx.lineWidth = 1;
         
         const gridSize = 100;
-        const startX = Math.floor(-this.camera.x / gridSize) * gridSize;
-        const startY = Math.floor(-this.camera.y / gridSize) * gridSize;
         
-        for (let x = startX; x < this.canvas.width; x += gridSize) {
+        // Calculate grid starting positions in world coordinates
+        const worldStartX = Math.floor(0 / gridSize) * gridSize;
+        const worldStartY = Math.floor(0 / gridSize) * gridSize;
+        const worldEndX = this.gameState.worldSize;
+        const worldEndY = this.gameState.worldSize;
+        
+        // Draw vertical grid lines
+        for (let x = worldStartX; x <= worldEndX; x += gridSize) {
+            const screenX = x + this.camera.x;
             this.ctx.beginPath();
-            this.ctx.moveTo(x, 0);
-            this.ctx.lineTo(x, this.canvas.height);
+            this.ctx.moveTo(screenX, this.camera.y);
+            this.ctx.lineTo(screenX, this.camera.y + this.gameState.worldSize);
             this.ctx.stroke();
         }
         
-        for (let y = startY; y < this.canvas.height; y += gridSize) {
+        // Draw horizontal grid lines
+        for (let y = worldStartY; y <= worldEndY; y += gridSize) {
+            const screenY = y + this.camera.y;
             this.ctx.beginPath();
-            this.ctx.moveTo(0, y);
-            this.ctx.lineTo(this.canvas.width, y);
+            this.ctx.moveTo(this.camera.x, screenY);
+            this.ctx.lineTo(this.camera.x + this.gameState.worldSize, screenY);
             this.ctx.stroke();
         }
     }
@@ -253,30 +274,30 @@ class GameClient {
             const screenX = player.x + this.camera.x;
             const screenY = player.y + this.camera.y;
             
-            // Проверяем, находится ли игрок в области видимости
-            if (screenX < -this.playerRadius || screenX > this.canvas.width + this.playerRadius ||
-                screenY < -this.playerRadius || screenY > this.canvas.height + this.playerRadius) {
-                return; // Пропускаем отрисовку если игрок за пределами экрана
+            // Only draw players within the world bounds
+            if (player.x < 0 || player.x > this.gameState.worldSize || 
+                player.y < 0 || player.y > this.gameState.worldSize) {
+                return;
             }
             
-            // Рисуем кружок игрока
+            // Draw player circle
             this.ctx.beginPath();
             this.ctx.arc(screenX, screenY, this.playerRadius, 0, 2 * Math.PI);
-            this.ctx.fillStyle = player.color;
+            this.ctx.fillStyle = player.color || '#4CAF50'; // Default green if no color
             this.ctx.fill();
             
-            // Обводка
+            // White border around player
             this.ctx.strokeStyle = '#ffffff';
             this.ctx.lineWidth = 2;
             this.ctx.stroke();
             
-            // Подпись с ID
-            this.ctx.fillStyle = '#ffffff';
+            // Player ID label
+            this.ctx.fillStyle = '#000000'; // Black text on white background
             this.ctx.font = '12px Arial';
             this.ctx.textAlign = 'center';
             this.ctx.fillText(player.id.substring(0, 6), screenX, screenY - this.playerRadius - 8);
             
-            // Выделяем своего игрока
+            // Highlight own player with green outline
             if (player.id === this.gameState.myId) {
                 this.ctx.beginPath();
                 this.ctx.arc(screenX, screenY, this.playerRadius + 5, 0, 2 * Math.PI);
@@ -284,41 +305,9 @@ class GameClient {
                 this.ctx.lineWidth = 3;
                 this.ctx.stroke();
                 
-                // Миникарта для своего игрока
                 this.drawMinimap(player);
             }
         });
-    }
-
-    drawWorldBounds() {
-        const boundsColor = 'rgba(255, 100, 100, 0.3)';
-        const boundsWidth = 20;
-        
-        // Левая граница
-        if (this.camera.x < 0) {
-            this.ctx.fillStyle = boundsColor;
-            this.ctx.fillRect(0, 0, -this.camera.x, this.canvas.height);
-        }
-        
-        // Правая граница
-        const rightBound = this.gameState.worldSize + this.camera.x;
-        if (rightBound < this.canvas.width) {
-            this.ctx.fillStyle = boundsColor;
-            this.ctx.fillRect(rightBound, 0, this.canvas.width - rightBound, this.canvas.height);
-        }
-        
-        // Верхняя граница
-        if (this.camera.y < 0) {
-            this.ctx.fillStyle = boundsColor;
-            this.ctx.fillRect(0, 0, this.canvas.width, -this.camera.y);
-        }
-        
-        // Нижняя граница
-        const bottomBound = this.gameState.worldSize + this.camera.y;
-        if (bottomBound < this.canvas.height) {
-            this.ctx.fillStyle = boundsColor;
-            this.ctx.fillRect(0, bottomBound, this.canvas.width, this.canvas.height - bottomBound);
-        }
     }
 
     drawMinimap(player) {
@@ -327,38 +316,45 @@ class GameClient {
         
         this.ctx.save();
         
-        // Фон миникарты
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        // Minimap background
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; // White with slight transparency
         this.ctx.fillRect(padding, padding, minimapSize, minimapSize);
-        this.ctx.strokeStyle = '#ffffff';
+        this.ctx.strokeStyle = '#000000';
         this.ctx.lineWidth = 2;
         this.ctx.strokeRect(padding, padding, minimapSize, minimapSize);
         
-        // Масштаб для миникарты
+        // Scale for minimap
         const scale = minimapSize / this.gameState.worldSize;
         
-        // Рисуем игроков на миникарте
+        // Draw world border on minimap
+        this.ctx.strokeStyle = '#000000';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(padding, padding, minimapSize, minimapSize);
+        
+        // Draw players on minimap
         Object.values(this.gameState.players).forEach(p => {
-            const mapX = padding + p.x * scale;
-            const mapY = padding + p.y * scale;
-            const mapRadius = Math.max(3, this.playerRadius * scale);
-            
-            this.ctx.beginPath();
-            this.ctx.arc(mapX, mapY, mapRadius, 0, 2 * Math.PI);
-            this.ctx.fillStyle = p.color;
-            this.ctx.fill();
-            
-            if (p.id === this.gameState.myId) {
-                this.ctx.strokeStyle = '#00ff00';
-                this.ctx.lineWidth = 2;
-                this.ctx.stroke();
+            if (p.x >= 0 && p.x <= this.gameState.worldSize && 
+                p.y >= 0 && p.y <= this.gameState.worldSize) {
+                const mapX = padding + p.x * scale;
+                const mapY = padding + p.y * scale;
+                const mapRadius = Math.max(2, 3); // Small fixed radius for minimap
+                
+                this.ctx.beginPath();
+                this.ctx.arc(mapX, mapY, mapRadius, 0, 2 * Math.PI);
+                this.ctx.fillStyle = p.color || '#4CAF50';
+                this.ctx.fill();
+                
+                if (p.id === this.gameState.myId) {
+                    this.ctx.strokeStyle = '#00ff00';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.stroke();
+                }
             }
         });
         
         this.ctx.restore();
     }
 
-    // Метод для очистки ресурсов
     destroy() {
         this.stopGameLoop();
         if (this.keepAliveInterval) {
@@ -370,12 +366,10 @@ class GameClient {
     }
 }
 
-// Инициализация игры при загрузке страницы
 window.addEventListener('load', () => {
     window.gameClient = new GameClient();
 });
 
-// Очистка ресурсов при закрытии страницы
 window.addEventListener('beforeunload', () => {
     if (window.gameClient) {
         window.gameClient.destroy();
