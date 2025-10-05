@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -11,10 +12,10 @@ import (
 )
 
 type User struct {
-	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Login    string             `bson:"login" json:"login"`
-	Password string             `bson:"password" json:"-"`
-	CreatedAt time.Time         `bson:"created_at" json:"created_at"`
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Login     string             `bson:"login" json:"login"`
+	Password  string             `bson:"password" json:"-"`
+	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 }
 
 type Repository struct {
@@ -77,4 +78,27 @@ func (r *Repository) ValidateCredentials(login, password string) (*User, error) 
 	}
 
 	return user, nil
+}
+
+func (r *Repository) GetUserByID(id string) (*User, error) {
+	// Convert hex string to ObjectID
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID format: %w", err)
+	}
+
+	// Query MongoDB
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var user User
+	err = r.collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("user not found")
+		}
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	return &user, nil
 }

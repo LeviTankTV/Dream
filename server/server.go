@@ -2,11 +2,11 @@ package server
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"log"
-	"time"
 	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
 
 	"mpg/server/game"
 	"mpg/server/user"
@@ -64,16 +64,10 @@ func NewServer(addr string) *Server {
 }
 
 func (s *Server) Start() error {
-	// Статические файлы
-	http.HandleFunc("/", s.serveHome)
-	http.HandleFunc("/style.css", s.serveCSS)
-	http.HandleFunc("/index.js", s.serveJS)
 
-	// API endpoints
+	// Оставить только API
 	http.HandleFunc("/api/register", s.handleRegister)
 	http.HandleFunc("/api/login", s.handleLogin)
-
-	// WebSocket endpoint
 	http.HandleFunc("/ws", s.handleWebSocket)
 
 	return http.ListenAndServe(s.addr, nil)
@@ -147,86 +141,71 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-func (s *Server) serveHome(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.Error(w, "Not found", http.StatusNotFound)
-		return
-	}
-	if r.Method != "GET" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	http.ServeFile(w, r, "client/index.html")
-}
-
-func (s *Server) serveCSS(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/css")
-	http.ServeFile(w, r, "client/style.css")
-}
-
-func (s *Server) serveJS(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript")
-	http.ServeFile(w, r, "client/index.js")
-}
-
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-    upgrader := websocket.Upgrader{
-        CheckOrigin: func(r *http.Request) bool {
-            return true // Для разработки разрешаем все origin
-        },
-    }
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Для разработки разрешаем все origin
+		},
+	}
 
-    ws, err := upgrader.Upgrade(w, r, nil)
-    if err != nil {
-        fmt.Println("WebSocket upgrade error:", err)
-        return
-    }
-    defer ws.Close()
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Println("WebSocket upgrade error:", err)
+		return
+	}
+	defer ws.Close()
 
-    // Проверяем аутентификацию
-    token := r.URL.Query().Get("token")
-    if token == "" {
-        ws.WriteJSON(map[string]interface{}{
-            "type": "error", 
-            "message": "Authentication required",
-        })
-        return
-    }
+	// Проверяем аутентификацию
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		ws.WriteJSON(map[string]interface{}{
+			"type":    "error",
+			"message": "Authentication required",
+		})
+		return
+	}
 
-    // Здесь можно добавить проверку токена в базе данных
-    // Пока просто используем токен как ID пользователя
-    userID := token
+	user, err := s.users.GetUserByID(token)
+	if err != nil {
+    	ws.WriteJSON(map[string]interface{}{
+        	"type":    "error",
+        	"message": "Invalid or expired token",
+    	})
+    	return
+	}
 
-    // Создаем нового игрока, передавая соединение и userID
-    player := s.game.AddPlayer(ws, userID)
-    defer s.game.RemovePlayer(player.ID)
+	username := user.Login // or user.Username, depending on your struct
+	userID := token        // this is the MongoDB ID (hex string)
 
-    // Отправляем начальное состояние
-    initialState := s.game.GetGameState(player.ID)
-    if err := ws.WriteJSON(initialState); err != nil {
-        fmt.Println("Error sending initial state:", err)
-        return
-    }
+	// Создаем нового игрока, передавая соединение и userID
+	player := s.game.AddPlayer(ws, userID, username)
+	defer s.game.RemovePlayer(player.ID)
 
-    // Обрабатываем сообщения от клиента
-    for {
-        var msg game.GameMessage
-        if err := ws.ReadJSON(&msg); err != nil {
-            fmt.Printf("Player %s disconnected: %v\n", player.ID, err)
-            break
-        }
+	// Отправляем начальное состояние
+	initialState := s.game.GetGameState(player.ID)
+	if err := ws.WriteJSON(initialState); err != nil {
+		fmt.Println("Error sending initial state:", err)
+		return
+	}
 
-        switch msg.Type {
-        case "move":
-            if moveData, ok := msg.Data.(map[string]interface{}); ok {
-                dx, _ := moveData["dx"].(float64)
-                dy, _ := moveData["dy"].(float64)
+	// Обрабатываем сообщения от клиента
+	for {
+		var msg game.GameMessage
+		if err := ws.ReadJSON(&msg); err != nil {
+			fmt.Printf("Player %s disconnected: %v\n", player.ID, err)
+			break
+		}
 
-                s.game.MovePlayer(player.ID, dx, dy)
-            }
-        case "ping":
-            ws.WriteJSON(game.GameMessage{Type: "pong"})
-        }
-    }
+		switch msg.Type {
+		case "move":
+			if moveData, ok := msg.Data.(map[string]interface{}); ok {
+				dx, _ := moveData["dx"].(float64)
+				dy, _ := moveData["dy"].(float64)
+
+				s.game.MovePlayer(player.ID, dx, dy)
+			}
+		case "ping":
+			ws.WriteJSON(game.GameMessage{Type: "pong"})
+		}
+	}
 }
