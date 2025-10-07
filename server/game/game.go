@@ -10,39 +10,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Player представляет игрока
-type Player struct {
-	ID             string    `json:"id"`
-	UserID         string    `json:"user_id"`
-	Username       string    `json:"username"`
-	X              float64   `json:"x"`
-	Y              float64   `json:"y"`
-	Color          string    `json:"color"`
-	Speed          float64   `json:"speed"`
-	PortalCooldown time.Time `json:"-"`
-	CurrentZone    string    `json:"-"`
-	Radius         float64   `json:"-"` // Радиус коллизии
-}
-
-type Mob struct {
-	ID        string  `json:"id"`
-	Type      string  `json:"type"`
-	Health    int     `json:"health"`
-	MaxHealth int     `json:"max_health"`
-	Damage    int     `json:"damage"`
-	Speed     float64 `json:"speed"`
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	Zone      string  `json:"zone"`
-	Radius    float64 `json:"-"`
-}
-
-// Константы мобов
-const (
-	MaxMobsPerZone = 100
-	MobRadius      = 20.0
-)
-
 // Константы коллизий
 const (
 	PlayerRadius    = 15.0
@@ -82,18 +49,19 @@ type Zone struct {
 }
 
 type Game struct {
-	players       map[string]*Player
-	playersMu     sync.RWMutex
-	worldWidth    float64
-	worldHeight   float64
-	colors        []string
-	connections   map[string]*playerConnection // Changed to playerConnection
-	connectionsMu sync.RWMutex
-	portals       map[string]*Portal
-	portalLinks   map[string]string
-	zones         map[string]*Zone
-	mobs          map[string]*Mob
-	mobsMu        sync.RWMutex
+	players          map[string]*Player
+	playersMu        sync.RWMutex
+	worldWidth       float64
+	worldHeight      float64
+	colors           []string
+	connections      map[string]*playerConnection
+	connectionsMu    sync.RWMutex
+	portals          map[string]*Portal
+	portalLinks      map[string]string
+	zones            map[string]*Zone
+	mobs             map[string]*Mob
+	mobsMu           sync.RWMutex
+	deadlockDetector *DeadlockDetector // ← Добавляем
 }
 
 type playerConnection struct {
@@ -103,84 +71,135 @@ type playerConnection struct {
 
 func NewGame() *Game {
 	g := &Game{
-		players:     make(map[string]*Player),
-		worldWidth:  7000.0,
-		worldHeight: 1000.0,
-		colors:      []string{"#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#98FB98", "#FFD700"},
-		connections: make(map[string]*playerConnection),
-		portals:     make(map[string]*Portal),
-		portalLinks: make(map[string]string),
-		zones:       make(map[string]*Zone),
-		mobs:        make(map[string]*Mob),
+		players:          make(map[string]*Player),
+		worldWidth:       7000.0,
+		worldHeight:      1000.0,
+		colors:           []string{"#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#98FB98", "#FFD700"},
+		connections:      make(map[string]*playerConnection),
+		portals:          make(map[string]*Portal),
+		portalLinks:      make(map[string]string),
+		zones:            make(map[string]*Zone),
+		mobs:             make(map[string]*Mob),
+		deadlockDetector: NewDeadlockDetector(), // ← Инициализируем
 	}
 
 	g.initZones()
 	g.initPortals()
-	g.spawnMobs()
 
 	go g.synchronizeGameState()
+	go g.mobBehaviorLoop()
+	go g.mobSpawnLoop()
+	go g.startDeadlockMonitoring() // ← Запускаем мониторинг
+
 	return g
 }
 
-func (g *Game) spawnMobs() {
-	g.mobsMu.Lock()
-	defer g.mobsMu.Unlock()
+func (g *Game) startDeadlockMonitoring() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	mobTypes := []struct {
-		mobType string
-		health  int
-		damage  int
-		speed   float64
-	}{
-		{"goblin", 50, 10, 2.0},
-		{"orc", 80, 15, 1.5},
-		{"wolf", 30, 8, 3.0},
+	for range ticker.C {
+		g.deadlockDetector.Check()
 	}
+}
 
-	for zoneName := range g.zones {
-		mobsInZone := 0
+func (g *Game) mobSpawnLoop() {
+	ticker := time.NewTicker(5 * time.Second) // раз в 5 секунд
+	defer ticker.Stop()
 
-		for i := 0; i < MaxMobsPerZone && mobsInZone < 30; i++ {
+	for range ticker.C {
+		g.spawnMobsIfNeeded()
+	}
+}
+
+func (g *Game) spawnMobsIfNeeded() {
+	maxMobsPerZone := 40
+
+	// Получаем текущее количество мобов по зонам
+	mobCountByZone := make(map[string]int)
+	g.mobsMu.RLock()
+	for _, mob := range g.mobs {
+		mobCountByZone[mob.Zone]++
+	}
+	g.mobsMu.RUnlock()
+
+	// Для каждой зоны проверяем, нужно ли доспавнить
+	for zoneName, zone := range g.zones {
+		currentCount := mobCountByZone[zoneName]
+		if currentCount >= maxMobsPerZone {
+			continue
+		}
+
+		needToSpawn := maxMobsPerZone - currentCount
+		if needToSpawn <= 0 {
+			continue
+		}
+
+		// Определяем типы мобов для спавна (одинаковый шанс для всех типов)
+		mobTypes := []MobType{MobTypeOrc, MobTypeWolf, MobTypeGoblin}
+		
+		spawned := 0
+		attempts := 0
+		maxAttempts := needToSpawn * 5
+
+		for spawned < needToSpawn && attempts < maxAttempts {
+			attempts++
+
+			// Выбираем случайный тип моба
 			mobType := mobTypes[rand.Intn(len(mobTypes))]
+			
+			// Спавним 1-3 мобов этого типа
+			count := rand.Intn(3) + 1
+			if spawned+count > needToSpawn {
+				count = needToSpawn - spawned
+			}
 
-			// Находим случайную позицию в зоне
-			zone := g.zones[zoneName]
-			x := zone.MinX + rand.Float64()*(zone.MaxX-zone.MinX)
-			y := zone.MinY + rand.Float64()*(zone.MaxY-zone.MinY)
+			for i := 0; i < count; i++ {
+				x := zone.MinX + rand.Float64()*(zone.MaxX-zone.MinX)
+				y := zone.MinY + rand.Float64()*(zone.MaxY-zone.MinY)
 
-			// Проверяем, чтобы не спавнить слишком близко к игрокам
-			if g.isPositionSafeForMob(x, y) {
-				mobID := fmt.Sprintf("mob_%s_%d", zoneName, len(g.mobs))
+				// Создаем временный моб для получения его радиуса
+				tempMob := NewMob("temp", mobType, x, y, zoneName)
 
-				mob := &Mob{
-					ID:        mobID,
-					Type:      mobType.mobType,
-					Health:    mobType.health,
-					MaxHealth: mobType.health,
-					Damage:    mobType.damage,
-					Speed:     mobType.speed,
-					X:         x,
-					Y:         y,
-					Zone:      zoneName,
-					Radius:    MobRadius,
+				if g.isPositionSafeForMob(x, y, tempMob.Radius) {
+					mobID := fmt.Sprintf("mob_%s_%s_%s_%d", zoneName, mobType, tempMob.Rarity, time.Now().UnixNano()+int64(rand.Intn(1000000)))
+					mob := NewMob(mobID, mobType, x, y, zoneName)
+
+					g.mobsMu.Lock()
+					g.mobs[mobID] = mob
+					g.mobsMu.Unlock()
+
+					spawned++
+					fmt.Printf("Spawned %s %s at (%.1f, %.1f) in %s zone (radius: %.1f, health: %d, damage: %d)\n",
+						mob.Rarity, mobType, x, y, zoneName, mob.Radius, mob.Health, mob.Damage)
 				}
 
-				g.mobs[mobID] = mob
-				mobsInZone++
-				fmt.Printf("Spawned %s at (%.1f, %.1f) in %s zone\n", mobType.mobType, x, y, zoneName)
+				if spawned >= needToSpawn {
+					break
+				}
 			}
 		}
 	}
 }
 
+func (g *Game) mobBehaviorLoop() {
+	ticker := time.NewTicker(100 * time.Millisecond) // 10 раз в секунду
+	defer ticker.Stop()
+
+	for range ticker.C {
+		g.UpdateMobs()
+	}
+}
+
 // Проверка безопасности позиции для моба
-func (g *Game) isPositionSafeForMob(x, y float64) bool {
+func (g *Game) isPositionSafeForMob(x, y float64, mobRadius float64) bool {
 	g.playersMu.RLock()
 	defer g.playersMu.RUnlock()
 
 	for _, player := range g.players {
 		distance := math.Sqrt(math.Pow(x-player.X, 2) + math.Pow(y-player.Y, 2))
-		if distance < 200 { // Минимальная дистанция от игроков
+		// Учитываем радиус моба при проверке дистанции
+		if distance < (200 + mobRadius) {
 			return false
 		}
 	}
@@ -241,15 +260,11 @@ func (g *Game) initZones() {
 }
 
 func (g *Game) filterObjectsByZone(zoneName string) (map[string]*Player, map[string]*Mob) {
-	g.playersMu.RLock()
-	defer g.playersMu.RUnlock()
-	g.mobsMu.RLock()
-	defer g.mobsMu.RUnlock()
-
 	filteredPlayers := make(map[string]*Player)
 	filteredMobs := make(map[string]*Mob)
 
-	// Фильтруем игроков
+	// Разделяем блокировки для players и mobs
+	g.playersMu.RLock()
 	for id, player := range g.players {
 		if player.CurrentZone == zoneName {
 			filteredPlayers[id] = &Player{
@@ -259,25 +274,32 @@ func (g *Game) filterObjectsByZone(zoneName string) (map[string]*Player, map[str
 				X:        player.X,
 				Y:        player.Y,
 				Color:    player.Color,
+				Speed:    player.Speed,
+				Radius:   player.Radius,
 			}
 		}
 	}
+	g.playersMu.RUnlock()
 
-	// Фильтруем мобов
+	g.mobsMu.RLock()
 	for id, mob := range g.mobs {
 		if mob.Zone == zoneName {
 			filteredMobs[id] = &Mob{
 				ID:        mob.ID,
 				Type:      mob.Type,
+				Rarity:    mob.Rarity,
 				Health:    mob.Health,
 				MaxHealth: mob.MaxHealth,
 				Damage:    mob.Damage,
+				Speed:     mob.Speed,
 				X:         mob.X,
 				Y:         mob.Y,
 				Zone:      mob.Zone,
+				Radius:    mob.Radius,
 			}
 		}
 	}
+	g.mobsMu.RUnlock()
 
 	return filteredPlayers, filteredMobs
 }
@@ -395,7 +417,6 @@ func (g *Game) synchronizeGameState() {
 }
 
 func (g *Game) broadcastGameState() {
-	// First, copy the connections map without holding the lock for a long time
 	g.connectionsMu.RLock()
 	connectionsCopy := make(map[string]*playerConnection, len(g.connections))
 	for id, pc := range g.connections {
@@ -407,21 +428,19 @@ func (g *Game) broadcastGameState() {
 		return
 	}
 
-	// Broadcast to all connections with zone-based filtering
 	for playerID, pc := range connectionsCopy {
 		var currentZone string
+
 		g.playersMu.RLock()
 		if player, exists := g.players[playerID]; exists {
 			currentZone = player.CurrentZone
 		}
 		g.playersMu.RUnlock()
 
-		// Если зона не определена, используем common как дефолт
 		if currentZone == "" {
 			currentZone = "common"
 		}
 
-		// Получаем объекты только из текущей зоны игрока
 		playersInZone, mobsInZone := g.filterObjectsByZone(currentZone)
 
 		state := map[string]interface{}{
@@ -439,7 +458,7 @@ func (g *Game) broadcastGameState() {
 		pc.mu.Unlock()
 
 		if err != nil {
-			fmt.Printf("Error broadcasting to player %s: %v\n", playerID, err)
+			g.removeConnection(playerID)
 		}
 	}
 }
@@ -451,17 +470,9 @@ func (g *Game) AddPlayer(conn *websocket.Conn, userID string, username string) *
 	playerID := fmt.Sprintf("%d", time.Now().UnixNano()+rand.Int63())
 	spawnX, spawnY := g.findSafeSpawnPosition("common", "")
 
-	player := &Player{
-		ID:          playerID,
-		UserID:      userID,
-		Username:    username,
-		X:           spawnX,
-		Y:           spawnY,
-		Color:       g.colors[rand.Intn(len(g.colors))],
-		Speed:       5.0,
-		CurrentZone: "common",
-		Radius:      PlayerRadius,
-	}
+	// ИСПОЛЬЗОВАТЬ NewPlayer вместо прямого создания
+	player := NewPlayer(playerID, userID, username, spawnX, spawnY, g.colors[rand.Intn(len(g.colors))])
+	player.CurrentZone = "common"
 
 	g.players[playerID] = player
 
@@ -498,41 +509,53 @@ func (g *Game) removeConnection(playerID string) {
 	}
 }
 func (g *Game) MovePlayer(playerID string, dx, dy float64) {
+	start := time.Now()
+
+	// Только читаем игрока под RLock
+	g.playersMu.RLock()
+	player, exists := g.players[playerID]
+	if !exists {
+		g.playersMu.RUnlock()
+		return
+	}
+
+	// Копируем необходимые данные
+	currentX, currentY := player.X, player.Y
+	speed := player.Speed
+	g.playersMu.RUnlock() // СРАЗУ отпускаем RLock
+
+	// Вычисляем новую позицию БЕЗ блокировки
+	length := math.Sqrt(dx*dx + dy*dy)
+	if length > 0 {
+		dx = dx / length
+		dy = dy / length
+	}
+
+	movementX := dx * speed
+	movementY := dy * speed
+	newX := currentX + movementX
+	newY := currentY + movementY
+
+	newX, newY = g.constrainToZone(player, newX, newY)
+	finalX, finalY := g.avoidOtherPlayers(player, newX, newY)
+
+	// Только записываем изменения под Lock
 	g.playersMu.Lock()
-	defer g.playersMu.Unlock()
-
 	if player := g.players[playerID]; player != nil {
-		// Нормализуем вектор направления (чтобы диагональное движение не было быстрее)
-		length := math.Sqrt(dx*dx + dy*dy)
-		if length > 0 {
-			dx = dx / length
-			dy = dy / length
-		}
+		fmt.Printf("🎮 Moving player %s: (%.1f, %.1f) -> (%.1f, %.1f)\n",
+			playerID, player.X, player.Y, finalX, finalY)
 
-		// Умножаем на скорость игрока
-		movementX := dx * player.Speed
-		movementY := dy * player.Speed
-
-		// Рассчитываем новую позицию
-		newX := player.X + movementX
-		newY := player.Y + movementY
-
-		// Применяем ограничения зоны
-		newX, newY = g.constrainToZone(player, newX, newY)
-
-		// Применяем избегание других игроков
-		finalX, finalY := g.avoidOtherPlayers(player, newX, newY)
-
-		// Обновляем позицию
 		player.X = finalX
 		player.Y = finalY
-
-		// Проверяем взаимодействие с порталами
 		g.checkPortalInteraction(player)
-
-		fmt.Printf("Player %s moved to (%.1f, %.1f) in %s zone (speed: %.1f)\n",
-			playerID, player.X, player.Y, player.CurrentZone, player.Speed)
 	}
+
+	totalTime := time.Since(start)
+	if totalTime > 20*time.Millisecond {
+		fmt.Printf("⚠️ SLOW MOVEMENT PROCESSING: %v for player %s\n", totalTime, playerID)
+	}
+	g.playersMu.Unlock()
+	fmt.Printf("🔓 Released players lock for %s after %v\n", playerID, totalTime)
 }
 
 // SetPlayerSpeed устанавливает скорость игрока
@@ -624,8 +647,8 @@ func (g *Game) isPositionSafeForSpawn(x, y float64, excludePlayerID string) bool
 		dy := y - player.Y
 		distance := math.Sqrt(dx*dx + dy*dy)
 
-		// Больший радиус для спавна, чтобы избежать immediate коллизий
-		if distance < (PlayerRadius * 3) {
+		// ИСПОЛЬЗОВАТЬ player.Radius вместо PlayerRadius
+		if distance < (player.Radius * 3) {
 			return false
 		}
 	}
