@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
-	"time"
-
 	"mpg/server/game"
 	"mpg/server/user"
+	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -141,6 +140,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func (s *Server) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.client.Disconnect(ctx)
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -167,11 +172,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.users.GetUserByID(token)
 	if err != nil {
-    	ws.WriteJSON(map[string]interface{}{
-        	"type":    "error",
-        	"message": "Invalid or expired token",
-    	})
-    	return
+		ws.WriteJSON(map[string]interface{}{
+			"type":    "error",
+			"message": "Invalid or expired token",
+		})
+		return
 	}
 
 	username := user.Login // or user.Username, depending on your struct
@@ -204,6 +209,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 				s.game.MovePlayer(player.ID, dx, dy)
 			}
+		case "respawn": 
+			s.game.RespawnPlayer(player.ID)
 		case "ping":
 			ws.WriteJSON(game.GameMessage{Type: "pong"})
 		}

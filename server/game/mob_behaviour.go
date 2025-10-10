@@ -18,70 +18,61 @@ import (
 
 
 func (g *Game) UpdateMobs() {
-    // Сначала собираем всех мобов под RLock
-    g.mobsMu.RLock()
-    mobs := make([]*Mob, 0, len(g.mobs))
-    for _, mob := range g.mobs {
-        mobs = append(mobs, mob)
-    }
-    g.mobsMu.RUnlock()
-    
-    // Обновляем поведение без блокировок
-    for _, mob := range mobs {
-        g.updateMobBehavior(mob)
-    }
-    
-    // Разрешаем коллизии с минимальными блокировками
-    g.resolveMobCollisions()
-}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 
-func (g *Game) resolveMobCollisions() {
+	// Копируем мобов (на случай, если кто-то удалится во время обработки)
 	mobs := make([]*Mob, 0, len(g.mobs))
 	for _, mob := range g.mobs {
 		mobs = append(mobs, mob)
 	}
 
-	// Проверяем коллизии для каждой пары мобов
+	// Обновляем поведение каждого моба
+	for _, mob := range mobs {
+		g.updateMobBehavior(mob)
+	}
+
+	// Разрешаем коллизии между мобами
+	g.resolveMobCollisionsLocked()
+}
+
+func (g *Game) resolveMobCollisionsLocked() {
+	mobs := make([]*Mob, 0, len(g.mobs))
+	for _, mob := range g.mobs {
+		mobs = append(mobs, mob)
+	}
+
 	for i := 0; i < len(mobs); i++ {
 		for j := i + 1; j < len(mobs); j++ {
 			mobA := mobs[i]
 			mobB := mobs[j]
 
-			// Проверяем, находятся ли мобы в одной зоне
 			if mobA.Zone != mobB.Zone {
 				continue
 			}
 
-			// Вычисляем расстояние между мобами
 			dx := mobA.X - mobB.X
 			dy := mobA.Y - mobB.Y
-			distance := math.Sqrt(dx*dx + dy*dy)
-			
-			minDistance := mobA.Radius + mobB.Radius + MobCollisionBuffer
+			distSq := dx*dx + dy*dy
 
-			if distance < minDistance && distance > 0 {
-				// Мобы пересекаются - раздвигаем их
-				overlap := minDistance - distance
-				
-				// Нормализуем вектор
-				dx = dx / distance
-				dy = dy / distance
-
-				// Сдвигаем мобов в противоположных направлениях
+			minDist := mobA.Radius + mobB.Radius + MobCollisionBuffer
+			if distSq < minDist*minDist && distSq > 0 {
+				distance := math.Sqrt(distSq)
+				overlap := minDist - distance
+				dxNorm := dx / distance
+				dyNorm := dy / distance
 				shift := overlap * 0.5 * MobAvoidanceForce
 
-				mobA.X += dx * shift
-				mobA.Y += dy * shift
-				mobB.X -= dx * shift
-				mobB.Y -= dy * shift
+				mobA.X += dxNorm * shift
+				mobA.Y += dyNorm * shift
+				mobB.X -= dxNorm * shift
+				mobB.Y -= dyNorm * shift
 
-				// Также корректируем целевые позиции, чтобы мобы не пытались пройти друг через друга
-				g.adjustMobTargets(mobA, mobB, dx, dy, shift)
+				g.adjustMobTargets(mobA, mobB, dxNorm, dyNorm, shift)
 			}
 		}
 	}
 }
-
 func (g *Game) adjustMobTargets(mobA, mobB *Mob, dx, dy, shift float64) {
 	// Если мобы движутся друг на друга, корректируем их цели
 	distanceToTargetA := math.Sqrt(math.Pow(mobA.TargetX-mobA.X, 2) + math.Pow(mobA.TargetY-mobA.Y, 2))
@@ -111,10 +102,10 @@ func (g *Game) updateMobBehavior(mob *Mob) {
 	now := time.Now()
 
 	// Находим ближайшего игрока в зоне
-	closestPlayer, distance := g.findClosestPlayerInZone(mob.X, mob.Y, mob.Zone)
+	closestPlayer, distance := g.findClosestPlayerInZoneLocked(mob.X, mob.Y, mob.Zone)
 
 	// Проверяем коллизии с другими мобами перед обновлением поведения
-	g.avoidOtherMobs(mob)
+	g.avoidOtherMobsLocked(mob)
 
 	switch mob.Type {
 	case MobTypeOrc:
@@ -126,27 +117,23 @@ func (g *Game) updateMobBehavior(mob *Mob) {
 	}
 
 	// Применяем движение
-	g.moveMob(mob)
+	g.moveMobLocked(mob)
 }
 
-func (g *Game) avoidOtherMobs(mob *Mob) {
-	// Избегаем столкновений с другими мобами при выборе пути
+func (g *Game) avoidOtherMobsLocked(mob *Mob) {
 	for _, otherMob := range g.mobs {
 		if otherMob.ID == mob.ID || otherMob.Zone != mob.Zone {
 			continue
 		}
-
-		distance := mob.DistanceTo(otherMob.X, otherMob.Y)
-		minDistance := mob.Radius + otherMob.Radius + MobCollisionBuffer + 10
-
-		if distance < minDistance {
-			// Вычисляем вектор избегания
-			angle := math.Atan2(mob.Y-otherMob.Y, mob.X-otherMob.X)
-			avoidDistance := minDistance + 30
-
-			// Корректируем целевую позицию
-			mob.TargetX = mob.X + math.Cos(angle)*avoidDistance
-			mob.TargetY = mob.Y + math.Sin(angle)*avoidDistance
+		dx := mob.X - otherMob.X
+		dy := mob.Y - otherMob.Y
+		distSq := dx*dx + dy*dy
+		minDist := mob.Radius + otherMob.Radius + MobCollisionBuffer + 10
+		if distSq < minDist*minDist {
+			angle := math.Atan2(dy, dx)
+			avoidDist := minDist + 30
+			mob.TargetX = mob.X + math.Cos(angle)*avoidDist
+			mob.TargetY = mob.Y + math.Sin(angle)*avoidDist
 			mob.LastMoveTime = time.Now()
 			break
 		}
@@ -262,54 +249,51 @@ func (g *Game) updateGoblinBehavior(mob *Mob, player *Player, distance float64, 
 	}
 }
 
-func (g *Game) moveMob(mob *Mob) {
+func (g *Game) moveMobLocked(mob *Mob) {
 	if mob.TargetX == 0 && mob.TargetY == 0 {
 		return
 	}
 
-	// Плавное движение к цели
 	dx := mob.TargetX - mob.X
 	dy := mob.TargetY - mob.Y
-	distance := math.Sqrt(dx*dx + dy*dy)
+	distSq := dx*dx + dy*dy
 
-	if distance > 5 { // Минимальная дистанция до цели
-		// Нормализация
-		dx = dx / distance
-		dy = dy / distance
+	if distSq > 25 { // 5*5
+		distance := math.Sqrt(distSq)
+		dx /= distance
+		dy /= distance
 
-		// Движение с учетом скорости
-		moveX := dx * mob.Speed
-		moveY := dy * mob.Speed
+		newX := mob.X + dx*mob.Speed
+		newY := mob.Y + dy*mob.Speed
 
-		newX := mob.X + moveX
-		newY := mob.Y + moveY
-
-		// Применяем ограничения зоны
 		newX, newY = g.constrainMobToZone(mob, newX, newY)
-
 		mob.X = newX
 		mob.Y = newY
 	}
 }
 
-func (g *Game) findClosestPlayerInZone(x, y float64, zone string) (*Player, float64) {
-	g.playersMu.RLock()
-	defer g.playersMu.RUnlock()
 
-	var closestPlayer *Player
-	minDistance := math.MaxFloat64
+func (g *Game) findClosestPlayerInZoneLocked(x, y float64, zone string) (*Player, float64) {
+	var closest *Player
+	minDist := math.MaxFloat64
 
 	for _, player := range g.players {
-		if player.CurrentZone == zone {
-			distance := math.Sqrt(math.Pow(x-player.X, 2) + math.Pow(y-player.Y, 2))
-			if distance < minDistance {
-				minDistance = distance
-				closestPlayer = player
+		// Пропускаем мёртвых игроков
+		if player.CurrentZone == zone && player.IsAlive() {
+			dx := x - player.X
+			dy := y - player.Y
+			dist := dx*dx + dy*dy
+			if dist < minDist {
+				minDist = dist
+				closest = player
 			}
 		}
 	}
 
-	return closestPlayer, minDistance
+	if closest == nil {
+		return nil, math.MaxFloat64
+	}
+	return closest, math.Sqrt(minDist)
 }
 
 func (g *Game) constrainMobToZone(mob *Mob, newX, newY float64) (float64, float64) {

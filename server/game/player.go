@@ -17,10 +17,13 @@ type Player struct {
 	CurrentZone    string    `json:"currentZone"`
 	Radius         float64   `json:"radius"`
 
+	Petals map[string]*Petal `json:"petals"`
+
 	Health          int       `json:"health"`
 	MaxHealth       int       `json:"max_health"`
 	CollisionDamage int       `json:"collision_damage"`
 	LastHitTime     time.Time `json:"-"` // Время последнего получения урона
+	LastAttackTime  time.Time `json:"-"` // Время последней атаки
 }
 
 func NewPlayer(id, userID, username string, x, y float64, color string) *Player {
@@ -37,6 +40,9 @@ func NewPlayer(id, userID, username string, x, y float64, color string) *Player 
 		MaxHealth:       100,
 		CollisionDamage: 25, // Базовый урон игрока
 		LastHitTime:     time.Now(),
+		LastAttackTime:  time.Now(),
+
+		Petals: make(map[string]*Petal),
 	}
 }
 
@@ -63,6 +69,28 @@ func (p *Player) TakeDamage(damage int) bool {
 }
 
 // IsAlive проверяет, жив ли игрок
+func (p *Player) TakeDamageFromMob(damage int) bool {
+	now := time.Now()
+	if now.Sub(p.LastHitTime) < 500*time.Millisecond { // КД 500 мс между получением урона
+		return false
+	}
+
+	p.Health -= damage
+	p.LastHitTime = now
+
+	if p.Health < 0 {
+		p.Health = 0
+	}
+
+	return true
+}
+
+// TakeDamageFromPlayer наносит урон игроку от другого игрока
+func (p *Player) TakeDamageFromPlayer(damage int) bool {
+	return p.TakeDamageFromMob(damage) // Пока используем ту же логику
+}
+
+// IsAlive проверяет, жив ли игрок
 func (p *Player) IsAlive() bool {
 	return p.Health > 0
 }
@@ -72,15 +100,44 @@ func (p *Player) Respawn(x, y float64) {
 	p.Health = p.MaxHealth
 	p.X = x
 	p.Y = y
+	p.CurrentZone = "common"
 	p.LastHitTime = time.Now()
 }
 
-// CanAttack проверяет, может ли игрок атаковать
+// CanAttack проверяет, может ли игрок атаковать (прошло ли 500мс с последней атаки)
 func (p *Player) CanAttack() bool {
-	return time.Since(p.LastHitTime) >= 100*time.Millisecond
+	return time.Since(p.LastAttackTime) >= 500*time.Millisecond
 }
 
 // MarkAttack отмечает время атаки
 func (p *Player) MarkAttack() {
-	p.LastHitTime = time.Now()
+	p.LastAttackTime = time.Now()
+}
+
+func (p *Player) AddPetal(petalType PetalType) {
+	petal := NewPetal(petalType, p.ID)
+	p.Petals[petal.ID] = petal
+}
+
+func (p *Player) RemovePetal(petalID string) {
+	delete(p.Petals, petalID)
+}
+func (p *Player) RemoveAllPetals() {
+	if p.Petals == nil {
+		return
+	}
+
+	// Опционально: можно отправить уведомления об уничтожении каждого петала,
+	// но для простоты просто очищаем карту.
+	p.Petals = make(map[string]*Petal)
+}
+
+func (p *Player) GetActivePetals() []*Petal {
+	activePetals := make([]*Petal, 0)
+	for _, petal := range p.Petals {
+		if petal.IsActive {
+			activePetals = append(activePetals, petal)
+		}
+	}
+	return activePetals
 }

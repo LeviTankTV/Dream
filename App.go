@@ -10,6 +10,7 @@ import (
 
 func main() {
 	srv := server.NewServer(":8080")
+	defer srv.Close()
 
 	fmt.Println("Game server started on :8080")
 	fmt.Println("API endpoints available at http://localhost:8080")

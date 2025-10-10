@@ -84,9 +84,9 @@ var MobConfigs = map[MobType]struct {
 	Radius         float64
 	DetectionRange float64
 }{
-	MobTypeGoblin: {Health: 30, Damage: 8, Speed: 10.0, Radius: 7.0, DetectionRange: 500},
+	MobTypeGoblin: {Health: 30, Damage: 8, Speed: 10.0, Radius: 20.0, DetectionRange: 500},
 	MobTypeOrc:    {Health: 80, Damage: 15, Speed: 20.0, Radius: 25.0, DetectionRange: 500},
-	MobTypeWolf:   {Health: 40, Damage: 10, Speed: 15.0, Radius: 12.0, DetectionRange: 500},
+	MobTypeWolf:   {Health: 40, Damage: 10, Speed: 15.0, Radius: 16.0, DetectionRange: 500},
 }
 
 type Mob struct {
@@ -112,6 +112,7 @@ type Mob struct {
 	AttackCooldown time.Time `json:"-"`
 	CreationTime   time.Time `json:"-"`
 	LastHitTime    time.Time `json:"-"`
+	LastAttackTime time.Time `json:"-"`
 }
 
 func getRandomRarity(zone string) Rarity {
@@ -178,6 +179,7 @@ func NewMob(id string, mobType MobType, x, y float64, zone string) *Mob {
 		Radius:         radius,
 		DetectionRange: MobConfigs[mobType].DetectionRange,
 		LastMoveTime:   time.Now(),
+		LastAttackTime: time.Now(),
 		CreationTime:   time.Now(),
 		LastHitTime:    time.Now(),
 		State:          MobStateWandering,
@@ -205,25 +207,26 @@ func (m *Mob) SetRandomTarget() {
 	}
 }
 
-// TakeDamage наносит урон мобу
-func (m *Mob) TakeDamage(damage int) {
-	m.Health -= damage
-	if m.Health < 0 {
-		m.Health = 0
-	}
-}
-
 // IsAlive проверяет, жив ли моб
 func (m *Mob) IsAlive() bool {
 	return m.Health > 0
 }
 
-// CanAttack проверяет, может ли моб атаковать (прошло ли 100мс с последней атаки)
+// CanAttack проверяет, может ли моб атаковать (прошло ли 500мс с последней атаки)
 func (m *Mob) CanAttack() bool {
-	return time.Since(m.LastHitTime) >= 100*time.Millisecond
+	return time.Since(m.LastAttackTime) >= 500*time.Millisecond
 }
 
-// MarkAttack отмечает время атаки
+// MarkAttack отмечает момент атаки моба
 func (m *Mob) MarkAttack() {
-	m.LastHitTime = time.Now()
+	m.LastAttackTime = time.Now()
+}
+
+// TakeDamage теперь НЕ влияет на возможность атаковать
+func (m *Mob) TakeDamage(damage int) {
+	m.Health -= damage
+	if m.Health < 0 {
+		m.Health = 0
+	}
+	m.LastHitTime = time.Now() // ← только для получения урона (например, для flee-поведения)
 }
